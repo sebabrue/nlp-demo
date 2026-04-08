@@ -2,111 +2,96 @@ import streamlit as st
 import torch
 import numpy as np
 import io
-import librosa
+import subprocess
 import joblib
 from transformers import AutoProcessor, Wav2Vec2Model
-from streamlit_mic_recorder import mic_recorder
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Swiss Dialect AI", page_icon="🇨🇭", layout="centered")
 
-# Custom CSS for branding
-st.markdown("""
-    <style>
-    .main {
-        background-color: #f5f5f5;
-    }
-    stButton>button {
-        width: 100%;
-        border-radius: 5px;
-        height: 3em;
-        background-color: #3498db;
-        color: white;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+# --- MAPPING (Passe diese Liste an deine Kaggle-Klassen an!) ---
+# Die Reihenfolge muss exakt der deines Trainings entsprechen (LabelEncoder.classes_)
+AGE_CLASSES = ["15-24", "25-34", "35-44", "45-54", "55-64", "65+"] 
 
-st.title("🇨🇭 Swiss German Generation Predictor")
-st.markdown("""
-    This AI estimates whether a speaker belongs to the **Younger Generation** (Teens/20s) 
-    or the **Older Generation** (60s/70s) based on acoustic dialect features.
-""")
-
-# --- MODEL LOADING ---
 @st.cache_resource
 def load_models():
     model_id = "facebook/wav2vec2-large-xlsr-53-german"
     processor = AutoProcessor.from_pretrained(model_id)
     wav_model = Wav2Vec2Model.from_pretrained(model_id).eval()
     
-    # Load your trained model
+    # Lade dein Modell (Multiclass)
     data = joblib.load('research_results.pkl') 
-    
-    if isinstance(data, dict) and 'model' in data:
-        classifier = data['model']
-    else:
-        classifier = data
+    classifier = data['model'] if isinstance(data, dict) and 'model' in data else data
     return processor, wav_model, classifier
 
-with st.spinner('Loading AI Models... Please wait.'):
+def load_audio_from_bytes_ffmpeg(audio_bytes, sr=16000):
+    """
+    Diese Funktion imitiert exakt deine Kaggle 'load_audio_ffmpeg' Funktion,
+    nutzt aber Bytes anstatt eines Dateipfads.
+    """
+    cmd = [
+        'ffmpeg', '-threads', '1', '-v', 'error', '-i', 'pipe:0', # pipe:0 liest von stdin
+        '-f', 's16le', '-acodec', 'pcm_s16le', '-ar', str(sr), '-ac', '1', '-'
+    ]
     try:
-        processor, wav_model, classifier = load_models()
-    except Exception as e:
-        st.error(f"Error loading models: {e}")
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, _ = proc.communicate(input=audio_bytes)
+        if out:
+            # Kaggle Logik: Normierung auf -1.0 bis 1.0
+            return np.frombuffer(out, dtype=np.int16).astype(np.float32) / 32768.0
+        return None
+    except:
+        return None
 
-# --- INTERFACE ---
-st.subheader("Step 1: Record your voice")
-st.info("Please speak for about 5 seconds in your natural Swiss German dialect.")
+# --- UI START ---
+processor, wav_model, classifier = load_models()
 
-# Recording component
-audio_data = mic_recorder(
-    start_prompt="Start Recording",
-    stop_prompt="Stop Recording",
-    key='recorder'
-)
+st.title("🇨🇭 Swiss German Age Predictor")
+st.write("Live analysis using the exact Kaggle preprocessing pipeline.")
+
+from streamlit_mic_recorder import mic_recorder
+audio_data = mic_recorder(start_prompt="🔴 Start Recording", stop_prompt="⏹️ Stop Recording", key='recorder')
 
 if audio_data:
     audio_bytes = audio_data['bytes']
     st.audio(audio_bytes, format='audio/wav')
     
-    if st.button("Analyze Acoustic Features"):
-        with st.spinner('Extracting Wav2Vec2 Embeddings...'):
+    if st.button("🚀 Run Precise Analysis"):
+        with st.spinner('Extracting Features (FFmpeg)...'):
             try:
-                # Process audio
-                audio_file = io.BytesIO(audio_bytes)
-                audio, sr = librosa.load(audio_file, sr=16000)
+                # 1. Laden mit FFmpeg (identisch zu Kaggle)
+                aud = load_audio_from_bytes_ffmpeg(audio_bytes)
                 
-                # Cap at 5 seconds (matching training data)
-                if len(audio) > 80000:
-                    audio = audio[:80000]
-                
-                # Feature Extraction
-                inputs = processor(audio, sampling_rate=16000, return_tensors="pt", padding=True)
-                with torch.no_grad():
-                    outputs = wav_model(**inputs)
-                    features = outputs.last_hidden_state.mean(dim=1).numpy()
-                
-                # Prediction
-                prediction = classifier.predict(features)[0] 
-                
-                # Output Mapping (Assuming 0=Young, 1=Old)
-                st.divider()
-                if prediction == 0 or str(prediction).lower() == 'jung':
-                    st.balloons()
-                    st.success("### Prediction: **Younger Generation** (Teens/20s)")
-                else:
-                    st.snow()
-                    st.success("### Prediction: **Older Generation** (60s/70s+)")
-                
-                st.caption("Note: Prediction is based on spectral features and dialectal phonology.")
+                if aud is not None and len(aud) > 1600:
+                    # 2. Truncate auf 5 Sekunden (80000 Samples bei 16kHz)
+                    aud = aud[:80000]
+                    
+                    # 3. Wav2Vec2 Feature Extraction
+                    # Padding wird hier von dem Processor übernommen (wie in gpu_worker)
+                    inputs = processor(aud, sampling_rate=16000, return_tensors="pt", padding=True)
+                    
+                    with torch.no_grad():
+                        # 4. Mean Pooling (identisch zu Kaggle: .mean(dim=1))
+                        outputs = wav_model(**inputs)
+                        emb = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
+                    
+                    # 5. Prediction
+                    prediction_idx = classifier.predict(emb)[0]
+                    
+                    # Mapping
+                    if isinstance(prediction_idx, (int, np.integer)):
+                        result_label = AGE_CLASSES[prediction_idx]
+                    else:
+                        result_label = prediction_idx
 
+                    st.divider()
+                    st.balloons()
+                    st.success(f"### Predicted Age Group: **{result_label}**")
+                else:
+                    st.warning("Audio too short or not recognized. Please record again.")
+                
             except Exception as e:
                 st.error(f"Analysis failed: {e}")
 
-# --- FOOTER ---
 st.divider()
-st.markdown("""
-    **Project:** Acoustic Fingerprints of Generational Change  
-    **Course:** Introduction to NLP (Spring 2026)  
-    **Data:** STT4SG-350 Corpus
-""")
+st.caption("Acoustic Fingerprinting @ Spring 2026. Models: Wav2Vec2-XLSR-53 + LightGBM.")
