@@ -24,7 +24,7 @@ st.markdown("""
         color: white;
     }
     </style>
-    """, unsafe_base_hint=True)
+    """, unsafe_allow_html=True)
 
 st.title("🇨🇭 Swiss German Generation Predictor")
 st.markdown("""
