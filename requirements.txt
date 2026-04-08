@@ -1,0 +1,9 @@
+streamlit
+torch
+transformers
+numpy
+librosa
+joblib
+scikit-learn
+lightgbm
+streamlit-mic-recorder
