@@ -11,3 +11,6 @@ allowRunOnSave = true
 
 [logger]
 level = "info"
+
+[server]
+fileWatcherType = "none"
