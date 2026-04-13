@@ -94,21 +94,13 @@ def get_embeddings(audio_bytes):
 
 # --- Minimalist UI ---
 st.title("Swiss Voice Age Predictor")
-st.write("Record about 5 seconds of speech → preview it → run the prediction")
-st.info("The model works best with roughly 5 seconds of clear speech.")
 
 # Built-in audio recorder
 audio_file = st.audio_input("Record your voice", sample_rate=16000)
 
 if audio_file:
-    st.session_state["last_audio"] = audio_file.getvalue()
+    recorded_audio = audio_file.getvalue()
 
-recorded_audio = st.session_state.get("last_audio")
-
-if recorded_audio:
-    st.audio(recorded_audio, format="audio/wav")
-
-if recorded_audio:
     # Trigger analysis automatically or via a single button
     if st.button("Predict Age", use_container_width=True):
         emb = get_embeddings(recorded_audio)
@@ -123,7 +115,7 @@ if recorded_audio:
 
             st.markdown("---")
             col1, col2 = st.columns(2, gap="small")
-            col1.metric("Predicted Class (Baseline Model)", f"{res_all}")
-            col2.metric("Binary Prediction (Research Model)", label_bin)
+            col1.metric("Baseline Model", f"{res_all}")
+            col2.metric("Research Model (Binary)", label_bin)
         else:
             st.error("Audio processing failed.")
