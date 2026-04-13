@@ -23,7 +23,6 @@ ENV/
 env/
 .venv
 .env
-*.pkl
 *.pyc
 .DS_Store
 *.ipynb_checkpoints
