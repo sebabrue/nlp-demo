@@ -14,11 +14,16 @@ st.markdown(
     <style>
     .block-container {
         max-width: 760px;
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
     }
 
     @media (max-width: 640px) {
         .block-container {
             max-width: 100%;
+            padding-top: 1rem;
         }
 
         .stButton > button {
