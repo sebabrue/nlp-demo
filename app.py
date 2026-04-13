@@ -1,5 +1,4 @@
 import streamlit as st
-from audio_recorder_streamlit import audio_recorder
 import torch
 import numpy as np
 import joblib
@@ -95,12 +94,14 @@ def get_embeddings(audio_bytes):
 
 # --- Minimalist UI ---
 st.title("Swiss Voice Age Predictor")
+st.write("Record about 5 seconds of speech → preview it → run the prediction")
+st.info("The model works best with roughly 5 seconds of clear speech.")
 
-# Only one audio interface: The recorder itself
-wav_audio_data = audio_recorder()
+# Built-in audio recorder
+audio_file = st.audio_input("Record your voice", sample_rate=16000)
 
-if wav_audio_data:
-    st.session_state["last_audio"] = wav_audio_data
+if audio_file:
+    st.session_state["last_audio"] = audio_file.getvalue()
 
 recorded_audio = st.session_state.get("last_audio")
 
