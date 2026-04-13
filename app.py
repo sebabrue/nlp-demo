@@ -1,5 +1,5 @@
 import streamlit as st
-from st_audiorec import st_audiorec
+from audio_recorder_streamlit import audio_recorder
 import torch
 import numpy as np
 import joblib
@@ -8,7 +8,35 @@ from transformers import Wav2Vec2Processor, Wav2Vec2Model
 
 # Setup and Config
 MODEL_ID = "facebook/wav2vec2-large-xlsr-53-german"
-st.set_page_config(page_title="Voice Age Classifier", page_icon="🎙️")
+st.set_page_config(page_title="Voice Age Classifier", page_icon="🎙️", layout="centered")
+
+st.markdown(
+    """
+    <style>
+    .block-container {
+        max-width: 760px;
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+
+    @media (max-width: 640px) {
+        .block-container {
+            max-width: 100%;
+            padding-top: 0.75rem;
+            padding-left: 0.85rem;
+            padding-right: 0.85rem;
+        }
+
+        .stButton > button {
+            width: 100%;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 @st.cache_resource
@@ -67,15 +95,22 @@ def get_embeddings(audio_bytes):
 
 # --- Minimalist UI ---
 st.title("Swiss Voice Age Predictor")
-st.write("Record your voice below to see the prediction.")
 
 # Only one audio interface: The recorder itself
-wav_audio_data = st_audiorec()
+wav_audio_data = audio_recorder()
 
 if wav_audio_data:
+    st.session_state["last_audio"] = wav_audio_data
+
+recorded_audio = st.session_state.get("last_audio")
+
+if recorded_audio:
+    st.audio(recorded_audio, format="audio/wav")
+
+if recorded_audio:
     # Trigger analysis automatically or via a single button
-    if st.button("Predict Age"):
-        emb = get_embeddings(wav_audio_data)
+    if st.button("Predict Age", use_container_width=True):
+        emb = get_embeddings(recorded_audio)
 
         if emb is not None:
             # Run Predictions
@@ -83,11 +118,11 @@ if wav_audio_data:
             res_bin = clf_bin.predict(emb)[0]
 
             # Formatting results
-            label_bin = "Young" if res_bin == 0 else "Old"
+            label_bin = "young" if res_bin == 0 else "old"
 
             st.markdown("---")
-            col1, col2 = st.columns(2)
-            col1.metric("Predicted Class", f"{res_all}")
-            col2.metric("General Group", label_bin)
+            col1, col2 = st.columns(2, gap="small")
+            col1.metric("Predicted Class (Baseline Model)", f"{res_all}")
+            col2.metric("Binary Prediction (Research Model)", label_bin)
         else:
             st.error("Audio processing failed.")
