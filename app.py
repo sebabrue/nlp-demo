@@ -91,7 +91,7 @@ def get_embeddings(audio_bytes):
 
 
 # --- Minimalist UI ---
-st.title("Swiss Voice Age Predictor")
+st.title("Swiss Voice Age Classifier")
 
 # Built-in audio recorder
 audio_file = st.audio_input("Record your voice", sample_rate=16000)
