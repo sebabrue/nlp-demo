@@ -3,69 +3,40 @@ from st_audiorec import st_audiorec
 import torch
 import numpy as np
 import joblib
-import io
 import subprocess
-import logging
+from transformers import Wav2Vec2Processor, Wav2Vec2Model
 
-# 1. Dynamischer Import, um lokale Versionskonflikte zu umgehen
-try:
-    from transformers import AutoProcessor, Wav2Vec2Model
-except ImportError:
-    try:
-        from transformers import Wav2Vec2Processor as AutoProcessor, Wav2Vec2Model
-    except ImportError:
-        st.error(
-            "Kritischer Fehler: 'transformers' Bibliothek nicht gefunden oder zu alt."
-        )
-        st.stop()
-
-# Warnungen unterdrücken
-logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
-
-# Konfiguration
+# Setup and Config
 MODEL_ID = "facebook/wav2vec2-large-xlsr-53-german"
+st.set_page_config(page_title="Voice Age Classifier", page_icon="🎙️")
 
 
-# --- MODELL LADEN ---
 @st.cache_resource
-def load_models():
-    # Lädt den Processor und das Embedding-Modell
-    processor = AutoProcessor.from_pretrained(MODEL_ID)
+def load_assets():
+    # Load processor and embedding model
+    processor = Wav2Vec2Processor.from_pretrained(MODEL_ID)
     model = Wav2Vec2Model.from_pretrained(MODEL_ID)
     model.eval()
 
-    # Deine .pkl Dateien laden (müssen im gleichen Verzeichnis liegen)
-    baseline_data = joblib.load("baseline_results.pkl")
-    research_data = joblib.load("research_results.pkl")
+    # Load classifiers
+    clf_all = joblib.load("baseline_results.pkl")
+    clf_bin = joblib.load("research_results.pkl")
 
-    # Falls die .pkl Dateien ein Dictionary sind, extrahieren wir das Modell-Objekt
-    clf_all = (
-        baseline_data["model"] if isinstance(baseline_data, dict) else baseline_data
-    )
-    clf_bin = (
-        research_data["model"] if isinstance(research_data, dict) else research_data
-    )
+    # Ensure we have the model object if it was saved as a dict
+    model_all = clf_all["model"] if isinstance(clf_all, dict) else clf_all
+    model_bin = clf_bin["model"] if isinstance(clf_bin, dict) else clf_bin
 
-    return processor, model, clf_all, clf_bin
+    return processor, model, model_all, model_bin
 
 
-# Komponenten initialisieren
-try:
-    processor, embedding_model, clf_all, clf_bin = load_models()
-except Exception as e:
-    st.error(f"Fehler beim Laden der Modelle/Dateien: {e}")
-    st.stop()
+# Initialize app
+processor, embedding_model, clf_all, clf_bin = load_assets()
 
 
-# --- AUDIO VERARBEITUNG (FFmpeg) ---
-def process_audio(audio_bytes):
-    # Exakt wie in deinem Training: 16kHz, Mono, pcm_s16le
+def get_embeddings(audio_bytes):
+    # Process audio through FFmpeg pipe (Matches training preprocessing)
     cmd = [
         "ffmpeg",
-        "-threads",
-        "1",
-        "-v",
-        "error",
         "-i",
         "pipe:0",
         "-f",
@@ -78,66 +49,45 @@ def process_audio(audio_bytes):
         "1",
         "-",
     ]
-    try:
-        proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        out, err = proc.communicate(input=audio_bytes)
-        if out:
-            # Normalisierung auf float32
-            return np.frombuffer(out, dtype=np.int16).astype(np.float32) / 32768.0
-        return None
-    except Exception as e:
-        st.error(f"FFmpeg Fehler: {e}")
-        return None
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    out, _ = proc.communicate(input=audio_bytes)
+
+    if out:
+        audio_np = np.frombuffer(out, dtype=np.int16).astype(np.float32) / 32768.0
+        # Prepare for Wav2Vec2 (80k samples = 5 seconds)
+        inputs = processor(
+            audio_np[:80000], sampling_rate=16000, return_tensors="pt"
+        ).input_values
+        with torch.no_grad():
+            return embedding_model(inputs).last_hidden_state.mean(dim=1).cpu().numpy()
+    return None
 
 
-# --- UI ---
-st.set_page_config(page_title="Age Predictor", page_icon="🎙️")
-st.title("🎙️ Schweizerdeutsch Alters-Check")
-st.write("Nimm ca. 5 Sekunden Audio auf, um dein Alter schätzen zu lassen.")
+# --- Minimalist UI ---
+st.title("Swiss Voice Age Predictor")
+st.write("Record your voice below to see the prediction.")
 
-# Aufnahme-Widget
+# Only one audio interface: The recorder itself
 wav_audio_data = st_audiorec()
 
-if wav_audio_data is not None:
-    st.audio(wav_audio_data, format="audio/wav")
+if wav_audio_data:
+    # Trigger analysis automatically or via a single button
+    if st.button("Predict Age"):
+        emb = get_embeddings(wav_audio_data)
 
-    if st.button("Stimme analysieren"):
-        with st.spinner("Verarbeite Audio und generiere Embeddings..."):
-            # 1. Audio via FFmpeg laden
-            audio_np = process_audio(wav_audio_data)
+        if emb is not None:
+            # Run Predictions
+            res_all = clf_all.predict(emb)[0]
+            res_bin = clf_bin.predict(emb)[0]
 
-            if audio_np is not None:
-                # 2. Wav2Vec2 Embeddings (80.000 Samples = 5 Sek)
-                inputs = processor(
-                    audio_np[:80000], sampling_rate=16000, return_tensors="pt"
-                ).input_values
+            # Formatting results
+            label_bin = "Young" if res_bin == 0 else "Old"
 
-                with torch.no_grad():
-                    outputs = embedding_model(inputs)
-                    # Mean Pooling über die Zeitachse (dim=1)
-                    embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
-
-                # 3. Predictions mit LightGBM
-                pred_all = clf_all.predict(embeddings)[0]
-                pred_bin_idx = clf_bin.predict(embeddings)[0]
-
-                # Mapping für Binär-Label
-                label_bin = (
-                    "Jung (Teens/Twenties)" if pred_bin_idx == 0 else "Alt (60s+)"
-                )
-
-                # 4. Ergebnisse anzeigen
-                st.divider()
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    st.subheader("Baseline")
-                    st.metric("Altersgruppe", f"{pred_all}")
-
-                with col2:
-                    st.subheader("Research")
-                    st.metric("Tendenz", label_bin)
-            else:
-                st.error("Audio konnte nicht verarbeitet werden.")
+            st.markdown("---")
+            col1, col2 = st.columns(2)
+            col1.metric("Predicted Class", f"{res_all}")
+            col2.metric("General Group", label_bin)
+        else:
+            st.error("Audio processing failed.")
