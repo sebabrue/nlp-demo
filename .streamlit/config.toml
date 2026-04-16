@@ -1,0 +1,9 @@
+[logger]
+# Reduce logging overhead
+level = "warning"
+
+[server]
+# Lower resource usage
+maxUploadSize = 50
+maxMessageSize = 200
+

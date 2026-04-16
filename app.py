@@ -3,6 +3,8 @@ import torch
 import numpy as np
 import joblib
 import subprocess
+import gc
+import psutil
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
 
 # Setup and Config
@@ -58,6 +60,21 @@ def load_assets():
 processor, embedding_model, clf_all, clf_bin = load_assets()
 
 
+def get_memory_usage():
+    """Get current memory usage in MB."""
+    process = psutil.Process()
+    return process.memory_info().rss / 1024 / 1024
+
+
+def check_memory_available():
+    """Check if sufficient memory is available for prediction."""
+    mem_mb = get_memory_usage()
+    # Warn if using more than 2500MB
+    if mem_mb > 2500:
+        return False, mem_mb
+    return True, mem_mb
+
+
 def get_embeddings(audio_bytes):
     # Process audio through FFmpeg pipe (Matches training preprocessing)
     cmd = [
@@ -78,15 +95,34 @@ def get_embeddings(audio_bytes):
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     out, _ = proc.communicate(input=audio_bytes)
+    proc.wait()  # Ensure subprocess cleanup
 
-    if out:
-        audio_np = np.frombuffer(out, dtype=np.int16).astype(np.float32) / 32768.0
-        # Prepare for Wav2Vec2 (80k samples = 5 seconds)
-        inputs = processor(
-            audio_np[:80000], sampling_rate=16000, return_tensors="pt"
-        ).input_values
-        with torch.no_grad():
-            return embedding_model(inputs).last_hidden_state.mean(dim=1).cpu().numpy()
+    try:
+        if out:
+            audio_np = np.frombuffer(out, dtype=np.int16).astype(np.float32) / 32768.0
+            # Prepare for Wav2Vec2 (80k samples = 5 seconds)
+            inputs = processor(
+                audio_np[:80000], sampling_rate=16000, return_tensors="pt"
+            ).input_values.to(
+                embedding_model.device
+            )  # Move to same device as model
+
+            with torch.no_grad():
+                embeddings = (
+                    embedding_model(inputs).last_hidden_state.mean(dim=1).cpu().numpy()
+                )
+
+            # Explicit cleanup
+            del inputs, audio_np, out
+            torch.cuda.empty_cache()
+            gc.collect()
+
+            return embeddings
+    finally:
+        # Ensure process is terminated
+        if proc.poll() is None:
+            proc.terminate()
+
     return None
 
 
@@ -101,19 +137,31 @@ if audio_file:
 
     # Trigger analysis automatically or via a single button
     if st.button("Predict Age", use_container_width=True):
-        emb = get_embeddings(recorded_audio)
+        # Check memory before processing
+        mem_ok, mem_usage = check_memory_available()
 
-        if emb is not None:
-            # Run Predictions
-            res_all = clf_all.predict(emb)[0]
-            res_bin = clf_bin.predict(emb)[0]
-
-            # Formatting results
-            label_bin = "young" if res_bin == 0 else "old"
-
-            st.markdown("---")
-            col1, col2 = st.columns(2, gap="small")
-            col1.metric("Baseline Model", f"{res_all}")
-            col2.metric("Research Model (Binary)", label_bin)
+        if not mem_ok:
+            st.warning(
+                f"⚠️ High memory usage ({mem_usage:.0f}MB). Please try again in a moment or refresh the page."
+            )
         else:
-            st.error("Audio processing failed.")
+            emb = get_embeddings(recorded_audio)
+
+            if emb is not None:
+                # Run Predictions
+                res_all = clf_all.predict(emb)[0]
+                res_bin = clf_bin.predict(emb)[0]
+
+                # Formatting results
+                label_bin = "young" if res_bin == 0 else "old"
+
+                st.markdown("---")
+                col1, col2 = st.columns(2, gap="small")
+                col1.metric("Baseline Model", f"{res_all}")
+                col2.metric("Research Model (Binary)", label_bin)
+
+                # Cleanup after display
+                del emb
+                gc.collect()
+            else:
+                st.error("Audio processing failed.")
